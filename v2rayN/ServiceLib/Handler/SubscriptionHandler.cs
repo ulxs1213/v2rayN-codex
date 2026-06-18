@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace ServiceLib.Handler;
 
 public static class SubscriptionHandler
@@ -17,6 +19,8 @@ public static class SubscriptionHandler
         }
 
         var successCount = 0;
+        var changedCount = 0;
+        var unchangedCount = 0;
         foreach (var item in subItem)
         {
             try
@@ -41,11 +45,24 @@ public static class SubscriptionHandler
                 var result = await DownloadAllSubscriptions(config, item, blProxy, downloadHandle);
 
                 // Process download result
-                if (await ProcessDownloadResult(config, item.Id, result, hashCode, updateFunc))
+                var beforeProfiles = await GetSubscriptionProfileSnapshot(item.Id);
+                var importCount = await ProcessDownloadResult(config, item.Id, result, hashCode, updateFunc);
+                if (importCount > 0)
                 {
-                    item.UpdateTime = DateTimeOffset.Now.ToUnixTimeSeconds();
-                    await ConfigHandler.AddSubItem(config, item);
                     successCount++;
+                    var afterProfiles = await GetSubscriptionProfileSnapshot(item.Id);
+                    if (HasSubscriptionChanged(beforeProfiles, afterProfiles))
+                    {
+                        item.UpdateTime = DateTimeOffset.Now.ToUnixTimeSeconds();
+                        await ConfigHandler.AddSubItem(config, item);
+                        changedCount++;
+                        await updateFunc?.Invoke(false, $"{hashCode}{FormatSubscriptionChangedMessage(beforeProfiles.Count, afterProfiles.Count)}");
+                    }
+                    else
+                    {
+                        unchangedCount++;
+                        await updateFunc?.Invoke(false, $"{hashCode}{FormatSubscriptionUnchangedMessage()}");
+                    }
                 }
 
                 await updateFunc?.Invoke(false, "-------------------------------------------------------");
@@ -67,7 +84,130 @@ public static class SubscriptionHandler
         }
 
         await updateFunc?.Invoke(successCount > 0, $"{ResUI.MsgUpdateSubscriptionEnd}");
-        Logging.SaveLog($"UpdateSubscription end ({updateMode}), successCount={successCount}");
+        Logging.SaveLog($"UpdateSubscription end ({updateMode}), successCount={successCount}, changedCount={changedCount}, unchangedCount={unchangedCount}");
+    }
+
+    private static async Task<List<string>> GetSubscriptionProfileSnapshot(string subId)
+    {
+        var profiles = await AppManager.Instance.ProfileItems(subId);
+        if (profiles is not { Count: > 0 })
+        {
+            return [];
+        }
+
+        return profiles
+            .Select(CreateProfileSnapshotHash)
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static string FormatSubscriptionChangedMessage(int beforeCount, int afterCount)
+    {
+        return IsChineseUi()
+            ? $"订阅内容已变化，节点数量: {beforeCount}->{afterCount}"
+            : $"Subscription content changed, profiles: {beforeCount}->{afterCount}";
+    }
+
+    private static string FormatSubscriptionUnchangedMessage()
+    {
+        return IsChineseUi()
+            ? "订阅已获取，但节点内容没有变化，更新时间保持不变"
+            : "Subscription fetched, but profile content was unchanged; update time kept";
+    }
+
+    private static bool IsChineseUi()
+    {
+        return CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasSubscriptionChanged(List<string> beforeProfiles, List<string> afterProfiles)
+    {
+        if (beforeProfiles.Count != afterProfiles.Count)
+        {
+            return true;
+        }
+
+        return !beforeProfiles.SequenceEqual(afterProfiles);
+    }
+
+    private static string CreateProfileSnapshotHash(ProfileItem item)
+    {
+        var protocolExtra = item.GetProtocolExtra();
+        var transportExtra = item.GetTransportExtra();
+        var snapshot = JsonUtils.Serialize(new
+        {
+            item.ConfigType,
+            item.CoreType,
+            Remarks = NormalizeSnapshotValue(item.Remarks),
+            Address = NormalizeSnapshotValue(item.Address),
+            item.Port,
+            Password = NormalizeSnapshotValue(item.Password),
+            Username = NormalizeSnapshotValue(item.Username),
+            Network = NormalizeSnapshotValue(item.Network),
+            StreamSecurity = NormalizeSnapshotValue(item.StreamSecurity),
+            AllowInsecure = NormalizeSnapshotValue(item.AllowInsecure),
+            Sni = NormalizeSnapshotValue(item.Sni),
+            Alpn = NormalizeSnapshotValue(item.Alpn),
+            Fingerprint = NormalizeSnapshotValue(item.Fingerprint),
+            PublicKey = NormalizeSnapshotValue(item.PublicKey),
+            ShortId = NormalizeSnapshotValue(item.ShortId),
+            SpiderX = NormalizeSnapshotValue(item.SpiderX),
+            Mldsa65Verify = NormalizeSnapshotValue(item.Mldsa65Verify),
+            item.MuxEnabled,
+            Cert = NormalizeSnapshotValue(item.Cert),
+            CertSha = NormalizeSnapshotValue(item.CertSha),
+            EchConfigList = NormalizeSnapshotValue(item.EchConfigList),
+            VerifyPeerCertByName = NormalizeSnapshotValue(item.VerifyPeerCertByName),
+            Finalmask = NormalizeSnapshotValue(item.Finalmask),
+            Protocol = new
+            {
+                protocolExtra.Uot,
+                CongestionControl = NormalizeSnapshotValue(protocolExtra.CongestionControl),
+                AlterId = NormalizeSnapshotValue(protocolExtra.AlterId),
+                VmessSecurity = NormalizeSnapshotValue(protocolExtra.VmessSecurity),
+                Flow = NormalizeSnapshotValue(protocolExtra.Flow),
+                VlessEncryption = NormalizeSnapshotValue(protocolExtra.VlessEncryption),
+                SsMethod = NormalizeSnapshotValue(protocolExtra.SsMethod),
+                WgPublicKey = NormalizeSnapshotValue(protocolExtra.WgPublicKey),
+                WgPresharedKey = NormalizeSnapshotValue(protocolExtra.WgPresharedKey),
+                WgInterfaceAddress = NormalizeSnapshotValue(protocolExtra.WgInterfaceAddress),
+                WgReserved = NormalizeSnapshotValue(protocolExtra.WgReserved),
+                protocolExtra.WgMtu,
+                SalamanderPass = NormalizeSnapshotValue(protocolExtra.SalamanderPass),
+                protocolExtra.UpMbps,
+                protocolExtra.DownMbps,
+                Ports = NormalizeSnapshotValue(protocolExtra.Ports),
+                HopInterval = NormalizeSnapshotValue(protocolExtra.HopInterval),
+                protocolExtra.InsecureConcurrency,
+                protocolExtra.NaiveQuic,
+                GroupType = NormalizeSnapshotValue(protocolExtra.GroupType),
+                ChildItems = NormalizeSnapshotValue(protocolExtra.ChildItems),
+                SubChildItems = NormalizeSnapshotValue(protocolExtra.SubChildItems),
+                Filter = NormalizeSnapshotValue(protocolExtra.Filter),
+                protocolExtra.MultipleLoad
+            },
+            Transport = new
+            {
+                RawHeaderType = NormalizeSnapshotValue(transportExtra.RawHeaderType),
+                Host = NormalizeSnapshotValue(transportExtra.Host),
+                Path = NormalizeSnapshotValue(transportExtra.Path),
+                XhttpMode = NormalizeSnapshotValue(transportExtra.XhttpMode),
+                XhttpExtra = NormalizeSnapshotValue(transportExtra.XhttpExtra),
+                GrpcAuthority = NormalizeSnapshotValue(transportExtra.GrpcAuthority),
+                GrpcServiceName = NormalizeSnapshotValue(transportExtra.GrpcServiceName),
+                GrpcMode = NormalizeSnapshotValue(transportExtra.GrpcMode),
+                KcpHeaderType = NormalizeSnapshotValue(transportExtra.KcpHeaderType),
+                KcpSeed = NormalizeSnapshotValue(transportExtra.KcpSeed),
+                transportExtra.KcpMtu
+            }
+        }, false, true);
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(snapshot)));
+    }
+
+    private static string NormalizeSnapshotValue(string? value)
+    {
+        return value ?? string.Empty;
     }
 
     private static async Task<int> RefreshServerIPInfoAfterSubscriptionUpdate(Config config, bool blProxy)
@@ -244,12 +384,12 @@ public static class SubscriptionHandler
         return result;
     }
 
-    private static async Task<bool> ProcessDownloadResult(Config config, string id, string result, string hashCode, Func<bool, string, Task> updateFunc)
+    private static async Task<int> ProcessDownloadResult(Config config, string id, string result, string hashCode, Func<bool, string, Task> updateFunc)
     {
         if (result.IsNullOrEmpty())
         {
             await updateFunc?.Invoke(false, $"{hashCode}{ResUI.MsgSubscriptionDecodingFailed}");
-            return false;
+            return 0;
         }
 
         await updateFunc?.Invoke(false, $"{hashCode}{ResUI.MsgGetSubscriptionSuccessfully}");
@@ -274,6 +414,6 @@ public static class SubscriptionHandler
                 ? $"{hashCode}{ResUI.MsgUpdateSubscriptionEnd}"
                 : $"{hashCode}{ResUI.MsgFailedImportSubscription}");
 
-        return ret > 0;
+        return Math.Max(0, ret);
     }
 }
