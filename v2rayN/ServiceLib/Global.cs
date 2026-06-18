@@ -169,6 +169,12 @@ public class Global
         @"http://www.msftconnecttest.com/connecttest.txt"
     ];
 
+    public static readonly List<string> CriticalAvailabilityCheckUrls =
+    [
+        @"https://api.openai.com/v1/models",
+        @"https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+    ];
+
     public static readonly List<string> GeoFilesSources =
     [
         "",

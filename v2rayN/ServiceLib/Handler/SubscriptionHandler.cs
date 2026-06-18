@@ -4,12 +4,15 @@ public static class SubscriptionHandler
 {
     public static async Task UpdateProcess(Config config, string subId, bool blProxy, Func<bool, string, Task> updateFunc)
     {
+        var updateMode = blProxy ? Global.ProxyTag : Global.DirectTag;
+        Logging.SaveLog($"UpdateSubscription start ({updateMode}), scope={(subId.IsNotEmpty() ? "selected" : "all")}");
         await updateFunc?.Invoke(false, ResUI.MsgUpdateSubscriptionStart);
         var subItem = await AppManager.Instance.SubItems();
 
         if (subItem is not { Count: > 0 })
         {
             await updateFunc?.Invoke(false, ResUI.MsgNoValidSubscription);
+            Logging.SaveLog($"UpdateSubscription end ({updateMode}), successCount=0, reason=no valid subscription");
             return;
         }
 
@@ -64,6 +67,7 @@ public static class SubscriptionHandler
         }
 
         await updateFunc?.Invoke(successCount > 0, $"{ResUI.MsgUpdateSubscriptionEnd}");
+        Logging.SaveLog($"UpdateSubscription end ({updateMode}), successCount={successCount}");
     }
 
     private static async Task<int> RefreshServerIPInfoAfterSubscriptionUpdate(Config config, bool blProxy)
@@ -262,8 +266,7 @@ public static class SubscriptionHandler
         var ret = await ConfigHandler.AddBatchServers(config, result, id, true);
         if (ret <= 0)
         {
-            Logging.SaveLog("FailedImportSubscription");
-            Logging.SaveLog(result);
+            Logging.SaveLog($"FailedImportSubscription, contentLength={result.Length}");
         }
 
         // Update completion message

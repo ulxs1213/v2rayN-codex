@@ -19,8 +19,9 @@ public static class ConnectionHandler
     {
         var time = await GetRealPingTimeInfo();
         var ip = time > 0 ? await GetIPInfo() : Global.None;
+        var failureReason = time > 0 ? await GetCriticalAvailabilityFailure() : null;
 
-        return new(time, ip);
+        return new(time, ip, failureReason);
     }
 
     /// <summary>
@@ -69,6 +70,62 @@ public static class ConnectionHandler
     {
         var port = AppManager.Instance.GetLocalPort(EInboundProtocol.socks);
         return new WebProxy($"socks5://{Global.Loopback}:{port}");
+    }
+
+    private static async Task<string?> GetCriticalAvailabilityFailure()
+    {
+        try
+        {
+            var webProxy = await GetWebProxy();
+            using var client = new HttpClient(new SocketsHttpHandler()
+            {
+                Proxy = webProxy,
+                UseProxy = webProxy != null
+            });
+            client.DefaultRequestHeaders.UserAgent.TryParseAdd(Utils.GetVersion(false));
+
+            foreach (var url in Global.CriticalAvailabilityCheckUrls)
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+                var failureReason = GetCriticalAvailabilityFailureReason(url, response);
+                if (failureReason.IsNotEmpty())
+                {
+                    return failureReason;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logging.SaveLog(_tag, ex);
+            return "critical availability check failed";
+        }
+
+        return null;
+    }
+
+    public static string? GetCriticalAvailabilityFailureReason(string url, HttpResponseMessage response)
+    {
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+        var cfMitigated = response.Headers.TryGetValues("cf-mitigated", out var values)
+            && values.Any(t => t.Contains("challenge", StringComparison.OrdinalIgnoreCase));
+        if (cfMitigated)
+        {
+            return $"{host} blocked by Cloudflare challenge";
+        }
+
+        if (host.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return response.StatusCode is HttpStatusCode.OK or HttpStatusCode.Unauthorized ? null : $"{host} returned {(int)response.StatusCode}";
+        }
+
+        if (host.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return response.StatusCode == HttpStatusCode.Forbidden ? $"{host} returned 403" : null;
+        }
+
+        return response.IsSuccessStatusCode ? null : $"{host} returned {(int)response.StatusCode}";
     }
 
     /// <summary>

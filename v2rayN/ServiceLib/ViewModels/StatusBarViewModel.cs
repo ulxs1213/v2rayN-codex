@@ -5,8 +5,11 @@ public class StatusBarViewModel : MyReactiveObject
     private static readonly Lazy<StatusBarViewModel> _instance = new(() => new(null));
     public static StatusBarViewModel Instance => _instance.Value;
     private static readonly TimeSpan _autoSubscriptionRecoveryCooldown = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan _autoSubscriptionRecoveryCheckInterval = TimeSpan.FromMinutes(2);
+    private readonly SemaphoreSlim _availabilityCheckSemaphore = new(1, 1);
     private readonly SemaphoreSlim _autoSubscriptionRecoverySemaphore = new(1, 1);
     private DateTimeOffset _lastAutoSubscriptionRecoveryTime = DateTimeOffset.MinValue;
+    private IDisposable? _autoSubscriptionRecoveryMonitor;
 
     #region ObservableCollection
 
@@ -228,6 +231,8 @@ public class StatusBarViewModel : MyReactiveObject
 
         #endregion AppEvents
 
+        StartAutoSubscriptionRecoveryMonitor();
+
         _ = Init();
     }
 
@@ -284,6 +289,40 @@ public class StatusBarViewModel : MyReactiveObject
     {
         AppEvents.SubscriptionsUpdateRequested.Publish(blProxy);
         await Task.Delay(1000);
+    }
+
+    private void StartAutoSubscriptionRecoveryMonitor()
+    {
+        _autoSubscriptionRecoveryMonitor ??= Observable.Interval(_autoSubscriptionRecoveryCheckInterval)
+            .Subscribe(async _ => await MonitorProxyAvailabilityForRecovery());
+    }
+
+    private async Task MonitorProxyAvailabilityForRecovery()
+    {
+        if (!await _availabilityCheckSemaphore.WaitAsync(0))
+        {
+            return;
+        }
+
+        try
+        {
+            var item = await ConfigHandler.GetDefaultServer(_config);
+            if (item == null)
+            {
+                return;
+            }
+
+            var result = await Task.Run(ConnectionHandler.RunAvailabilityCheckResult);
+            await TryUpdateSubscriptionsDirectlyAfterProxyFailure(result, "background monitor");
+        }
+        catch (Exception ex)
+        {
+            Logging.SaveLog("Proxy availability monitor", ex);
+        }
+        finally
+        {
+            _availabilityCheckSemaphore.Release();
+        }
     }
 
     private async Task RefreshServersBiz()
@@ -361,10 +400,10 @@ public class StatusBarViewModel : MyReactiveObject
 
         NoticeManager.Instance.SendMessageEx(msg);
         await TestServerAvailabilitySub(msg);
-        await TryUpdateSubscriptionsDirectlyAfterProxyFailure(result);
+        await TryUpdateSubscriptionsDirectlyAfterProxyFailure(result, "interactive check");
     }
 
-    private async Task TryUpdateSubscriptionsDirectlyAfterProxyFailure(AvailabilityCheckResult result)
+    private async Task TryUpdateSubscriptionsDirectlyAfterProxyFailure(AvailabilityCheckResult result, string trigger)
     {
         if (result.IsAvailable)
         {
@@ -373,6 +412,7 @@ public class StatusBarViewModel : MyReactiveObject
 
         if (!await _autoSubscriptionRecoverySemaphore.WaitAsync(0))
         {
+            Logging.SaveLog($"Proxy availability check failed ({trigger}); auto subscription recovery skipped because another recovery is running.");
             return;
         }
 
@@ -381,17 +421,19 @@ public class StatusBarViewModel : MyReactiveObject
             var now = DateTimeOffset.UtcNow;
             if (now - _lastAutoSubscriptionRecoveryTime < _autoSubscriptionRecoveryCooldown)
             {
+                Logging.SaveLog($"Proxy availability check failed ({trigger}); auto subscription recovery skipped because cooldown is active.");
                 return;
             }
 
             var subItems = await AppManager.Instance.SubItems();
             if (subItems?.Any(IsAutoRecoverySubscription) != true)
             {
+                Logging.SaveLog($"Proxy availability check failed ({trigger}); auto subscription recovery skipped because no valid enabled subscription was found.");
                 return;
             }
 
             _lastAutoSubscriptionRecoveryTime = now;
-            Logging.SaveLog("Proxy availability check failed; updating all subscriptions without proxy.");
+            Logging.SaveLog($"Proxy availability check failed ({trigger}); updating all subscriptions without proxy.");
             NoticeManager.Instance.SendMessageEx($"{ResUI.MsgUpdateSubscriptionStart} ({Global.DirectTag})");
             AppEvents.SubscriptionsUpdateRequested.Publish(false);
         }

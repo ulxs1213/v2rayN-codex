@@ -155,7 +155,7 @@ public class DownloadService
     {
         try
         {
-            var client = new HttpClient(new SocketsHttpHandler()
+            using var client = new HttpClient(new SocketsHttpHandler()
             {
                 Proxy = webProxy,
                 UseProxy = webProxy != null
@@ -174,8 +174,8 @@ public class DownloadService
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Utils.Base64Encode(uri.UserInfo));
             }
 
-            using var cts = new CancellationTokenSource();
-            var result = await client.GetStringAsync(url, cts.Token).WaitAsync(TimeSpan.FromSeconds(timeout), cts.Token);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeout));
+            var result = await client.GetStringAsync(url, cts.Token);
             return result;
         }
         catch (Exception ex)

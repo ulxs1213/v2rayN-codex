@@ -1,5 +1,6 @@
 using AwesomeAssertions;
 using System.Globalization;
+using System.Net;
 using Xunit;
 
 namespace ServiceLib.Tests.Connection;
@@ -108,6 +109,26 @@ public class ConnectionHandlerTests
         var result = new AvailabilityCheckResult(responseTime, Global.None);
 
         result.IsAvailable.Should().Be(expected);
+    }
+
+    [Fact]
+    public void AvailabilityCheckResult_IsAvailable_ShouldBeFalseWhenCriticalCheckFails()
+    {
+        var result = new AvailabilityCheckResult(42, Global.None, "chatgpt.com returned 403");
+
+        result.IsAvailable.Should().BeFalse();
+        result.ToString().Should().Contain("chatgpt.com returned 403");
+    }
+
+    [Fact]
+    public void GetCriticalAvailabilityFailureReason_CloudflareChallenge_ShouldReturnFailure()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+        response.Headers.TryAddWithoutValidation("cf-mitigated", "challenge");
+
+        var result = ConnectionHandler.GetCriticalAvailabilityFailureReason("https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27", response);
+
+        result.Should().Contain("Cloudflare challenge");
     }
 
     [Fact]

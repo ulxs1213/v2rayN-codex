@@ -58,12 +58,13 @@ public readonly record struct IpInfoResult(string Country, string? Ip, string? R
     }
 }
 
-public readonly record struct AvailabilityCheckResult(int ResponseTime, string? IpInfo)
+public readonly record struct AvailabilityCheckResult(int ResponseTime, string? IpInfo, string? FailureReason = null)
 {
-    public bool IsAvailable => ResponseTime > 0;
+    public bool IsAvailable => ResponseTime > 0 && FailureReason.IsNullOrEmpty();
 
     public override string ToString()
     {
-        return string.Format(ResUI.TestMeOutput, ResponseTime, IpInfo);
+        var result = string.Format(ResUI.TestMeOutput, ResponseTime, IpInfo);
+        return FailureReason.IsNullOrEmpty() ? result : $"{result} ({FailureReason})";
     }
 }
